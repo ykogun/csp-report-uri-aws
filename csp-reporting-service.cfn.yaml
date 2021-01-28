@@ -1,0 +1,192 @@
+AWSTemplateFormatVersion: 2010-09-09
+Transform: AWS::Serverless-2016-10-31
+Description: scp reporting service
+# Template to a URI enpoint to accept csp violation reports and store results in the synamdb table
+Resources:
+  CspdataTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: csp-data
+      AttributeDefinitions:
+        - AttributeName: "id"
+          AttributeType: "S"
+      BillingMode: PAY_PER_REQUEST
+      KeySchema:
+        - AttributeName: "id"
+          KeyType: "HASH"
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: csp-report-api
+      Body:
+        swagger: "2.0"
+        info:
+          description: "csp-report-api"
+          version: "2021-01-26T18:01:21Z"
+          title: "scp-api"
+        schemes:
+        - "https"
+        paths:
+          "/":
+            post:
+              produces:
+              - application/json
+              responses:
+                '200':
+                  description: 200 response
+                  schema:
+                    "$ref": "#/definitions/Empty"
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:cspreport-lambda/invocations"
+                httpMethod: POST
+                responses:
+                  default:
+                    statusCode: '200'
+                passthroughBehavior: when_no_match
+                contentHandling: CONVERT_TO_TEXT
+            x-amazon-apigateway-any-method:
+              consumes:
+              - application/json
+              produces:
+              - application/json
+              responses:
+                '405':
+                  description: 405 response
+              x-amazon-apigateway-integration:
+                type: mock
+                responses:
+                  default:
+                    statusCode: '405'
+                    responseTemplates:
+                      application/json: |-
+                        #set($inputRoot = $input.path('$'))
+                        { }
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                passthroughBehavior: when_no_match
+        definitions:
+          Empty:
+            type: object
+            title: Empty Schema
+  #iam policy to access dynamodb
+  Cspdatarole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: "cspdataLamdaRole"
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+      Policies:
+      - PolicyName: root
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Sid: Cloudwatch
+            Effect: Allow
+            Action:
+            - cloudwatch:DescribeLogGroups
+            - cloudwatch:DescribeLogStreams
+            Resource: "*"
+          - Sid: Dynamodb
+            Effect: Allow
+            Action:
+            - dynamodb:BatchGetItem
+            - dynamodb:PutItem
+            - dynamodb:DescribeTable
+            - dynamodb:GetItem
+            - dynamodb:Scan
+            - dynamodb:Query
+            - dynamodb:UpdateItem
+            Resource: !GetAtt CspdataTable.Arn
+          - Sid: logs
+            Effect: Allow
+            Action:
+            - logs:Put*
+            - logs:Create*
+            - logs:Describe*
+            - logs:Get*
+            Resource: arn:aws:logs:*:log-group:/csp*
+  Cspdatafunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: cspreport-lambda
+      Handler: index.handler
+      Description: 'csp report lambda function'
+      MemorySize: 128
+      Timeout: 40
+      Role: !GetAtt Cspdatarole.Arn
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const dynamo = new AWS.DynamoDB.DocumentClient({region: 'us-west-2'});
+          exports.handler = (event, context, callback) => {
+
+              // Callback to finish response
+              const done = (err, res) => callback(null, {
+                  statusCode: err ? '400' : '204',
+                  body: err ? err.message : '',
+                  headers: {
+                      'Content-Type': 'application/json',
+                  }
+              });
+
+          function uuid() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+              var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+              return v.toString(16);
+            });
+          }
+
+              switch (event.httpMethod) {
+                  case 'POST':
+                      var reqJson = JSON.parse(event.body, (key, value) => {
+                            if (value === null || value === '') {
+                              return "NA";
+                            }
+                            return value;
+                      });
+                      if(!reqJson.hasOwnProperty('csp-report')) {
+                          done();
+                          break;
+                      }
+                      var item = reqJson["csp-report"];
+                      item.id = uuid();
+                      item.timestamp = new Date().getTime().toString();
+                      dynamo.put({
+                          TableName: process.env.table,
+                          Item: item
+                      }, done);
+                      break;
+                  default:
+                      done(new Error('Unsupported method'));
+              }
+          };
+      Runtime: nodejs12.x
+      Environment:
+        Variables:
+          table: csp-data
+  Deployment:
+    Type: AWS::ApiGateway::Deployment
+    Properties:
+      Description: SlaDeployment
+      RestApiId: !Ref RestApi
+      StageName: latest
+  ConfigLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref Cspdatafunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+     # SourceAccount: !Ref 'AWS::AccountId' -- need more specifict permissions with source ARN for ai gw
+Outputs:
+  apiURL:
+    Description: apiURL - latest stage
+    Value:  !Sub "https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/latest"
