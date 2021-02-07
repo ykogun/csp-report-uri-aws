@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: scp reporting service
-# Template to a URI enpoint to accept csp violation reports and store results in the synamdb table
+# Template to a URI enpoint to accept csp violation reports and store results in the dynamodb table
 Resources:
   CspdataTable:
     Type: AWS::DynamoDB::Table
@@ -73,7 +73,7 @@ Resources:
       EndpointConfiguration:
         Types:
           - REGIONAL
-  #iam policy to access dynamodb
+  # IAM policy to access dynamodb
   Cspdatarole:
     Type: "AWS::IAM::Role"
     Properties:
