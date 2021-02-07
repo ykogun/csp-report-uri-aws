@@ -1,5 +1,4 @@
 AWSTemplateFormatVersion: 2010-09-09
-Transform: AWS::Serverless-2016-10-31
 Description: scp reporting service
 # Template to a URI enpoint to accept csp violation reports and store results in the synamdb table
 Resources:
@@ -69,11 +68,15 @@ Resources:
           Empty:
             type: object
             title: Empty Schema
+      Parameters:
+        endpointConfigurationTypes: REGIONAL
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
   #iam policy to access dynamodb
   Cspdatarole:
     Type: "AWS::IAM::Role"
     Properties:
-      RoleName: "cspdataLamdaRole"
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -98,12 +101,8 @@ Resources:
           - Sid: Dynamodb
             Effect: Allow
             Action:
-            - dynamodb:BatchGetItem
             - dynamodb:PutItem
             - dynamodb:DescribeTable
-            - dynamodb:GetItem
-            - dynamodb:Scan
-            - dynamodb:Query
             - dynamodb:UpdateItem
             Resource: !GetAtt CspdataTable.Arn
           - Sid: logs
@@ -126,7 +125,7 @@ Resources:
       Code:
         ZipFile: |
           const AWS = require('aws-sdk');
-          const dynamo = new AWS.DynamoDB.DocumentClient({region: 'us-west-2'});
+          const dynamo = new AWS.DynamoDB.DocumentClient();
           exports.handler = (event, context, callback) => {
 
               // Callback to finish response
@@ -185,7 +184,6 @@ Resources:
       FunctionName: !Ref Cspdatafunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-     # SourceAccount: !Ref 'AWS::AccountId' -- need more specifict permissions with source ARN for ai gw
 Outputs:
   apiURL:
     Description: apiURL - latest stage
